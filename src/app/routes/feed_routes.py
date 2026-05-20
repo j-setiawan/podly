@@ -31,6 +31,7 @@ from app.auth.service import update_user_last_active
 from app.extensions import db
 from app.feeds import (
     add_or_refresh_feed,
+    ensure_requested_feed_language,
     generate_aggregate_feed_xml,
     generate_feed_xml,
     is_feed_active_for_user,
@@ -43,6 +44,7 @@ from app.models import (
     User,
     UserFeed,
 )
+from app.whisper_languages import normalize_whisper_language, whisper_language_error
 from app.writer.client import writer_client
 from podcast_processor.podcast_downloader import sanitize_title
 from shared.processing_paths import get_in_root, get_srv_root
@@ -50,7 +52,6 @@ from shared.processing_paths import get_in_root, get_srv_root
 from .auth_routes import _require_authenticated_user as _auth_get_user
 
 logger = logging.getLogger("global_logger")
-
 
 feed_bp = Blueprint("feed", __name__)
 
@@ -189,6 +190,17 @@ def _check_feed_allowance(user: User, url: str) -> Optional[ResponseReturnValue]
     return None
 
 
+def _join_feed_and_whitelist_first_post(feed: Feed, user: User | None) -> None:
+    if user:
+        created, previous_count = _ensure_user_feed_membership(feed, user.id)
+        if created and previous_count == 0:
+            _whitelist_latest_for_first_member(feed, getattr(user, "id", None))
+        return
+
+    if not is_auth_enabled() and UserFeed.query.filter_by(feed_id=feed.id).count() == 0:
+        _whitelist_latest_for_first_member(feed, None)
+
+
 @feed_bp.route("/feed", methods=["POST"])
 def add_feed() -> ResponseReturnValue:
     settings = current_app.config.get("AUTH_SETTINGS")
@@ -200,6 +212,11 @@ def add_feed() -> ResponseReturnValue:
     url = request.form.get("url")
     if not url:
         return make_response(("URL is required", 400))
+
+    try:
+        language = normalize_whisper_language(request.form.get("language"))
+    except ValueError:
+        return make_response((whisper_language_error("empty"), 400))
 
     url = fix_url(url)
 
@@ -215,15 +232,9 @@ def add_feed() -> ResponseReturnValue:
             if allowance_error:
                 return allowance_error
 
-        feed = add_or_refresh_feed(url)
-        if user:
-            created, previous_count = _ensure_user_feed_membership(feed, user.id)
-            if created and previous_count == 0:
-                _whitelist_latest_for_first_member(feed, getattr(user, "id", None))
-        elif not is_auth_enabled():
-            # In no-auth mode, if this feed has no members, trigger whitelisting for the latest post.
-            if UserFeed.query.filter_by(feed_id=feed.id).count() == 0:
-                _whitelist_latest_for_first_member(feed, None)
+        feed = add_or_refresh_feed(url, language=language)
+        ensure_requested_feed_language(feed, language)
+        _join_feed_and_whitelist_first_post(feed, user)
 
         app = cast(Any, current_app)._get_current_object()
         Thread(
@@ -476,25 +487,38 @@ def update_feed_settings_endpoint(feed_id: int) -> ResponseReturnValue:
         return error_response
 
     payload = request.get_json(silent=True) or {}
-    if "auto_whitelist_new_episodes_override" not in payload:
+    if (
+        "auto_whitelist_new_episodes_override" not in payload
+        and "language" not in payload
+    ):
         return jsonify({"error": "No settings provided."}), 400
 
-    override = payload.get("auto_whitelist_new_episodes_override")
-    if override is not None and not isinstance(override, bool):
-        return (
-            jsonify(
-                {
-                    "error": "auto_whitelist_new_episodes_override must be a boolean or null."
-                }
-            ),
-            400,
-        )
+    writer_payload: dict[str, Any] = {"feed_id": feed_id}
 
-    result = writer_client.action(
-        "update_feed_settings",
-        {"feed_id": feed_id, "auto_whitelist_new_episodes_override": override},
-        wait=True,
-    )
+    if "auto_whitelist_new_episodes_override" in payload:
+        override = payload.get("auto_whitelist_new_episodes_override")
+        if override is not None and not isinstance(override, bool):
+            return (
+                jsonify(
+                    {
+                        "error": "auto_whitelist_new_episodes_override must be a boolean or null."
+                    }
+                ),
+                400,
+            )
+        writer_payload["auto_whitelist_new_episodes_override"] = override
+
+    if "language" in payload:
+        try:
+            language = normalize_whisper_language(payload.get("language"))
+        except ValueError:
+            return (
+                jsonify({"error": whisper_language_error("null")}),
+                400,
+            )
+        writer_payload["language"] = language
+
+    result = writer_client.action("update_feed_settings", writer_payload, wait=True)
     if result is None or not result.success:
         return (
             jsonify({"error": getattr(result, "error", "Failed to update feed")}),
@@ -937,6 +961,7 @@ def _serialize_feed(
         "auto_whitelist_new_episodes_override": getattr(
             feed, "auto_whitelist_new_episodes_override", None
         ),
+        "language": feed.language,
         "posts_count": len(feed.posts),
         "member_count": len(member_ids),
         "is_member": is_member,

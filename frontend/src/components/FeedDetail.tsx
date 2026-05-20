@@ -11,6 +11,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { copyToClipboard } from '../utils/clipboard';
 import { emitDiagnosticError } from '../utils/diagnostics';
 import { getHttpErrorInfo } from '../utils/httpError';
+import { WHISPER_LANGUAGES } from '../constants/whisperLanguages';
 
 interface FeedDetailProps {
   feed: Feed;
@@ -127,7 +128,35 @@ export default function FeedDetail({ feed, onClose, onFeedDeleted }: FeedDetailP
         auto_whitelist_new_episodes_override: override,
       }),
     onSuccess: (data) => {
-      setCurrentFeed(data);
+      setCurrentFeed((cur) => (cur.id === data.id ? data : cur));
+      queryClient.invalidateQueries({ queryKey: ['feeds'] });
+      toast.success('Feed settings updated');
+    },
+    onError: (err) => {
+      const { status, data, message } = getHttpErrorInfo(err);
+      emitDiagnosticError({
+        title: 'Failed to update feed settings',
+        message,
+        kind: status ? 'http' : 'network',
+        details: {
+          status,
+          response: data,
+          feedId: currentFeed.id,
+        },
+      });
+      toast.error('Failed to update feed settings');
+    },
+  });
+
+  const updateLanguageMutation = useMutation({
+    mutationFn: (language: string | null) =>
+      feedsApi.updateFeedSettings(currentFeed.id, { language }),
+    onSuccess: (data) => {
+      // Apply the server's returned feed locally — HomePage holds
+      // `selectedFeed` as a snapshot, so without this write the
+      // dropdown stays on the old value. Guarded against the user
+      // having switched feeds before the PATCH resolved.
+      setCurrentFeed((cur) => (cur.id === data.id ? data : cur));
       queryClient.invalidateQueries({ queryKey: ['feeds'] });
       toast.success('Feed settings updated');
     },
@@ -325,6 +354,10 @@ export default function FeedDetail({ feed, onClose, onFeedDeleted }: FeedDetailP
     const override =
       value === 'inherit' ? null : value === 'on';
     updateFeedSettingsMutation.mutate(override);
+  };
+
+  const handleLanguageChange = (value: string) => {
+    updateLanguageMutation.mutate(value === '' ? null : value);
   };
 
   const isMember = Boolean(currentFeed.is_member);
@@ -748,30 +781,62 @@ export default function FeedDetail({ feed, onClose, onFeedDeleted }: FeedDetailP
             )}
 
             {isAdmin && (
-              <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
-                <div className="flex flex-col gap-2">
-                  <div>
-                    <label className="text-sm font-medium text-gray-900">
-                      Auto-whitelist new episodes
-                    </label>
-                    <p className="text-xs text-gray-600">
-                      Overrides the global setting. Global default: {autoWhitelistDefaultLabel}.
-                    </p>
+              <div className="flex flex-col sm:flex-row gap-4">
+                <div className="flex-1 rounded-lg border border-gray-200 bg-gray-50 p-4">
+                  <div className="flex flex-col gap-2">
+                    <div>
+                      <label htmlFor="auto-whitelist-select" className="text-sm font-medium text-gray-900">
+                        Auto-whitelist new episodes
+                      </label>
+                      <p className="text-xs text-gray-600">
+                        Overrides the global setting. Global default: {autoWhitelistDefaultLabel}.
+                      </p>
+                    </div>
+                    <select
+                      id="auto-whitelist-select"
+                      value={autoWhitelistSelectValue}
+                      onChange={(e) => handleAutoWhitelistOverrideChange(e.target.value)}
+                      disabled={updateFeedSettingsMutation.isPending}
+                      className={`text-sm border border-gray-300 rounded-md px-3 py-2 bg-white ${
+                        updateFeedSettingsMutation.isPending
+                          ? 'opacity-60 cursor-not-allowed'
+                          : ''
+                      }`}
+                    >
+                      <option value="inherit">Use global setting ({autoWhitelistDefaultLabel})</option>
+                      <option value="on">On</option>
+                      <option value="off">Off</option>
+                    </select>
                   </div>
-                  <select
-                    value={autoWhitelistSelectValue}
-                    onChange={(e) => handleAutoWhitelistOverrideChange(e.target.value)}
-                    disabled={updateFeedSettingsMutation.isPending}
-                    className={`text-sm border border-gray-300 rounded-md px-3 py-2 bg-white ${
-                      updateFeedSettingsMutation.isPending
-                        ? 'opacity-60 cursor-not-allowed'
-                        : ''
-                    }`}
-                  >
-                    <option value="inherit">Use global setting ({autoWhitelistDefaultLabel})</option>
-                    <option value="on">On</option>
-                    <option value="off">Off</option>
-                  </select>
+                </div>
+
+                <div className="flex-1 rounded-lg border border-gray-200 bg-gray-50 p-4">
+                  <div className="flex flex-col gap-2">
+                    <div>
+                      <label htmlFor="transcription-language-select" className="text-sm font-medium text-gray-900">
+                        Transcription language
+                      </label>
+                      <p className="text-xs text-gray-600">
+                        Overrides the global Whisper language setting for this feed.
+                      </p>
+                    </div>
+                    <select
+                      id="transcription-language-select"
+                      value={currentFeed.language ?? ''}
+                      onChange={(e) => handleLanguageChange(e.target.value)}
+                      disabled={updateLanguageMutation.isPending}
+                      className={`text-sm border border-gray-300 rounded-md px-3 py-2 bg-white ${
+                        updateLanguageMutation.isPending ? 'opacity-60 cursor-not-allowed' : ''
+                      }`}
+                    >
+                      <option value="">Use global setting</option>
+                      {WHISPER_LANGUAGES.map((lang) => (
+                        <option key={lang.code} value={lang.code}>
+                          {lang.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
               </div>
             )}

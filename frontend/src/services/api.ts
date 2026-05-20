@@ -82,9 +82,12 @@ export const feedsApi = {
     return response.data;
   },
 
-  addFeed: async (url: string): Promise<void> => {
+  addFeed: async (url: string, language?: string | null): Promise<void> => {
     const formData = new FormData();
     formData.append('url', url);
+    if (language) {
+      formData.append('language', language);
+    }
     await api.post('/feed', formData);
   },
 
@@ -142,7 +145,10 @@ export const feedsApi = {
 
   updateFeedSettings: async (
     feedId: number,
-    settings: { auto_whitelist_new_episodes_override: boolean | null }
+    // Server rejects {} with 400; require at least one settable field.
+    settings:
+      | { auto_whitelist_new_episodes_override: boolean | null; language?: string | null }
+      | { auto_whitelist_new_episodes_override?: boolean | null; language: string | null }
   ): Promise<Feed> => {
     const response = await api.patch(`/api/feeds/${feedId}/settings`, settings);
     return response.data;

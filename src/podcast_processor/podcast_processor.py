@@ -339,7 +339,9 @@ class PodcastProcessor:
         self.status_manager.update_job_status(
             job, "running", 2, "Transcribing audio", 50.0
         )
-        transcript_segments = self.transcription_manager.transcribe(post)
+        transcript_segments = self.transcription_manager.transcribe(
+            post, language=post.feed.language
+        )
         self._raise_if_cancelled(job, 2, cancel_callback)
 
         # Step 3: Classify ad segments

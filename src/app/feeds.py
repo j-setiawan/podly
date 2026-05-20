@@ -79,6 +79,26 @@ def _should_auto_whitelist_new_posts(feed: Feed, post: Optional[Post] = None) ->
     return False
 
 
+def ensure_requested_feed_language(feed: Feed, language: str | None) -> None:
+    """Persist an explicit add-feed language before any processing can be queued."""
+    if language is None or feed.language == language:
+        return
+
+    result = writer_client.action(
+        "update_feed_settings",
+        {
+            "feed_id": feed.id,
+            "language": language,
+            "only_if_unset": True,
+        },
+        wait=True,
+    )
+    if result is None or not result.success:
+        raise RuntimeError(getattr(result, "error", "Failed to set feed language"))
+
+    db.session.expire(feed, ["language"])
+
+
 def _get_base_url() -> str:
     try:
         # Check various ways HTTP/2 pseudo-headers might be available
@@ -187,7 +207,7 @@ number_of_episodes_to_whitelist_from_archive_of_new_feed setting: {entry.title}"
     logger.info(f"Feed with ID: {feed.id} refreshed")
 
 
-def add_or_refresh_feed(url: str) -> Feed:
+def add_or_refresh_feed(url: str, language: str | None = None) -> Feed:
     feed_data = fetch_feed(url)
     if "title" not in feed_data.feed:
         logger.error("Invalid feed URL")
@@ -195,13 +215,14 @@ def add_or_refresh_feed(url: str) -> Feed:
 
     feed = Feed.query.filter_by(rss_url=url).first()
     if feed:
+        ensure_requested_feed_language(feed, language)
         refresh_feed(feed)
     else:
-        feed = add_feed(feed_data)
+        feed = add_feed(feed_data, language=language)
     return feed  # type: ignore[no-any-return]
 
 
-def add_feed(feed_data: feedparser.FeedParserDict) -> Feed:
+def add_feed(feed_data: feedparser.FeedParserDict, language: str | None = None) -> Feed:
     logger.info(f"Storing feed: {feed_data.feed.title}")
     try:
         feed_dict = {
@@ -211,6 +232,8 @@ def add_feed(feed_data: feedparser.FeedParserDict) -> Feed:
             "rss_url": feed_data.href,
             "image_url": feed_data.feed.image.href,
         }
+        if language is not None:
+            feed_dict["language"] = language
 
         # Create a temporary feed object to use make_post helper
         temp_feed = Feed(**feed_dict)
