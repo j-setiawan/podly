@@ -129,12 +129,14 @@ def test_add_feed_with_language_on_new_feed(app):
             db.session.commit()
             return feed
 
-        with mock.patch(
-            "app.routes.feed_routes.add_or_refresh_feed",
-            side_effect=fake_add_or_refresh,
-        ), mock.patch("app.routes.feed_routes.Thread"), mock.patch(
-            "app.routes.feed_routes.writer_client"
-        ) as mock_writer:
+        with (
+            mock.patch(
+                "app.routes.feed_routes.add_or_refresh_feed",
+                side_effect=fake_add_or_refresh,
+            ),
+            mock.patch("app.routes.feed_routes.Thread"),
+            mock.patch("app.routes.feed_routes.writer_client") as mock_writer,
+        ):
 
             def writer_side_effect(action, params, wait=False):
                 assert action != "update_feed_settings"
@@ -171,13 +173,14 @@ def test_add_feed_existing_language_preserved_in_writer(app):
             rss_url="http://example.com/add-preserve.rss", language="fr"
         )
 
-        with mock.patch(
-            "app.routes.feed_routes.add_or_refresh_feed", return_value=existing
-        ), mock.patch("app.routes.feed_routes.Thread"), mock.patch(
-            "app.routes.feed_routes.writer_client"
-        ) as mock_route_writer, mock.patch(
-            "app.feeds.writer_client"
-        ) as mock_feed_writer:
+        with (
+            mock.patch(
+                "app.routes.feed_routes.add_or_refresh_feed", return_value=existing
+            ),
+            mock.patch("app.routes.feed_routes.Thread"),
+            mock.patch("app.routes.feed_routes.writer_client") as mock_route_writer,
+            mock.patch("app.feeds.writer_client") as mock_feed_writer,
+        ):
             mock_route_writer.action.return_value = SimpleNamespace(success=True)
             mock_feed_writer.action.return_value = SimpleNamespace(success=True)
             response = client.post(
@@ -196,35 +199,26 @@ def test_add_feed_existing_language_preserved_in_writer(app):
         assert update_calls[0].args[1].get("only_if_unset") is True
 
 
-def test_add_feed_sets_existing_feed_language_before_whitelisting(app):
-    """Existing feeds get the requested language before first-member processing."""
+def test_add_feed_sets_existing_feed_language_via_writer(app):
+    """Re-adding an existing feed persists the requested language through the writer."""
     with app.app_context():
         client = _make_client(app)
         existing = _make_feed(rss_url="http://example.com/order.rss")
-        actions: list[str] = []
-
-        def route_writer_side_effect(action, params, wait=False):
-            actions.append(action)
-            if action == "whitelist_latest_post_for_feed":
-                return SimpleNamespace(success=True, data={"updated": False})
-            return SimpleNamespace(success=True, data={})
 
         def feed_writer_side_effect(action, params, wait=False):
-            actions.append(action)
             Feed.query.filter_by(id=params["feed_id"]).update(
                 {"language": params["language"]}
             )
             db.session.commit()
             return SimpleNamespace(success=True, data={"language": params["language"]})
 
-        with mock.patch(
-            "app.routes.feed_routes.add_or_refresh_feed", return_value=existing
-        ), mock.patch("app.routes.feed_routes.Thread"), mock.patch(
-            "app.routes.feed_routes.writer_client"
-        ) as mock_route_writer, mock.patch(
-            "app.feeds.writer_client"
-        ) as mock_feed_writer:
-            mock_route_writer.action.side_effect = route_writer_side_effect
+        with (
+            mock.patch(
+                "app.routes.feed_routes.add_or_refresh_feed", return_value=existing
+            ),
+            mock.patch("app.routes.feed_routes.Thread"),
+            mock.patch("app.feeds.writer_client") as mock_feed_writer,
+        ):
             mock_feed_writer.action.side_effect = feed_writer_side_effect
 
             response = client.post(
@@ -234,10 +228,13 @@ def test_add_feed_sets_existing_feed_language_before_whitelisting(app):
             )
 
         assert response.status_code in (200, 302), response.data
-        assert actions[:2] == [
-            "update_feed_settings",
-            "whitelist_latest_post_for_feed",
+        update_calls = [
+            c
+            for c in mock_feed_writer.action.call_args_list
+            if c.args[0] == "update_feed_settings"
         ]
+        assert len(update_calls) == 1
+        assert update_calls[0].args[1]["language"] == "de"
         db.session.refresh(existing)
         assert existing.language == "de"
 
@@ -290,14 +287,15 @@ def test_add_feed_writer_failure_returns_500_before_enqueue(app):
             created["feed"] = feed
             return feed
 
-        with mock.patch(
-            "app.routes.feed_routes.add_or_refresh_feed",
-            side_effect=fake_add_or_refresh,
-        ), mock.patch("app.routes.feed_routes.Thread") as mock_thread, mock.patch(
-            "app.routes.feed_routes.writer_client"
-        ) as mock_route_writer, mock.patch(
-            "app.feeds.writer_client"
-        ) as mock_feed_writer:
+        with (
+            mock.patch(
+                "app.routes.feed_routes.add_or_refresh_feed",
+                side_effect=fake_add_or_refresh,
+            ),
+            mock.patch("app.routes.feed_routes.Thread") as mock_thread,
+            mock.patch("app.routes.feed_routes.writer_client") as mock_route_writer,
+            mock.patch("app.feeds.writer_client") as mock_feed_writer,
+        ):
             mock_route_writer.action.return_value = SimpleNamespace(success=True)
             mock_feed_writer.action.return_value = SimpleNamespace(
                 success=False, error="boom"
@@ -337,9 +335,12 @@ def test_add_feed_no_language_leaves_null(app):
         client = _make_client(app)
         existing = _make_feed(rss_url="http://example.com/add-nolang.rss")
 
-        with mock.patch(
-            "app.routes.feed_routes.add_or_refresh_feed", return_value=existing
-        ), mock.patch("app.routes.feed_routes.Thread"):
+        with (
+            mock.patch(
+                "app.routes.feed_routes.add_or_refresh_feed", return_value=existing
+            ),
+            mock.patch("app.routes.feed_routes.Thread"),
+        ):
             response = client.post(
                 "/feed",
                 data={"url": "http://example.com/add-nolang.rss"},

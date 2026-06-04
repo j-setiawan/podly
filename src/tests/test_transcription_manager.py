@@ -1,6 +1,6 @@
 import logging
 from collections.abc import Generator
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from flask import Flask

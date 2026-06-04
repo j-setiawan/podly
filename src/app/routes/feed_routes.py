@@ -192,7 +192,7 @@ def _build_feed_settings_updates(
 
 
 @feed_bp.route("/feed", methods=["POST"])
-def add_feed() -> ResponseReturnValue:
+def add_feed() -> ResponseReturnValue:  # noqa: PLR0912
     settings = current_app.config.get("AUTH_SETTINGS")
     user = None
     if settings and settings.require_auth:

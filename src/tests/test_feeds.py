@@ -15,7 +15,6 @@ from app.feeds import (
     _should_auto_whitelist_new_posts,
     add_feed,
     add_or_refresh_feed,
-    db,
     feed_item,
     fetch_feed,
     generate_feed_xml,

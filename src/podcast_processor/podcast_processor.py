@@ -429,8 +429,10 @@ class PodcastProcessor:
         self.status_manager.update_job_status(
             job, "running", 2, "Transcribing audio", 50.0
         )
+        feed = getattr(post, "feed", None)
+        feed_language = getattr(feed, "language", None) if feed is not None else None
         transcript_segments = self.transcription_manager.transcribe(
-            post, language=post.feed.language
+            post, language=feed_language
         )
         self._raise_if_cancelled(job, 2, cancel_callback)
         unprocessed_audio_path = (
@@ -565,8 +567,12 @@ class PodcastProcessor:
             self.status_manager.update_job_status(
                 job, "running", 3, "Transcribing audio for chapter generation", 75.0
             )
+            feed = getattr(post, "feed", None)
+            feed_language = (
+                getattr(feed, "language", None) if feed is not None else None
+            )
             transcript_segments = self.transcription_manager.transcribe(
-                post, language=post.feed.language
+                post, language=feed_language
             )
             self._raise_if_cancelled(job, 3, cancel_callback)
 

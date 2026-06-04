@@ -161,7 +161,9 @@ class TranscriptionManager:
             raise RuntimeError(f"ModelCall {model_call_id} not found after upsert")
         return model_call
 
-    def transcribe(self, post: Post, language: str | None = None) -> list[TranscriptSegment]:
+    def transcribe(
+        self, post: Post, language: str | None = None
+    ) -> list[TranscriptSegment]:
         """
         Transcribes a podcast audio file, or retrieves existing transcription.
 
