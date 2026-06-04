@@ -1,5 +1,5 @@
 import logging
-from typing import Any, List, Optional
+from typing import Any
 
 from app.extensions import db
 from app.models import ModelCall, Post, TranscriptSegment
@@ -30,10 +30,10 @@ class TranscriptionManager:
         self,
         logger: logging.Logger,
         config: Config,
-        model_call_query: Optional[Any] = None,
-        segment_query: Optional[Any] = None,
-        db_session: Optional[Any] = None,
-        transcriber: Optional[Transcriber] = None,
+        model_call_query: Any | None = None,
+        segment_query: Any | None = None,
+        db_session: Any | None = None,
+        transcriber: Transcriber | None = None,
     ):
         self.logger = logger
         self.config = config
@@ -61,7 +61,7 @@ class TranscriptionManager:
             return GroqWhisperTranscriber(self.logger, self.config.whisper)
         raise ValueError(f"unhandled whisper config {self.config.whisper}")
 
-    def _effective_language(self, language: Optional[str]) -> str:
+    def _effective_language(self, language: str | None) -> str:
         """The language Whisper will actually see: per-feed override > global > default."""
         if language:
             return language
@@ -69,7 +69,7 @@ class TranscriptionManager:
 
     def _check_existing_transcription(
         self, post: Post, language: str
-    ) -> Optional[List[TranscriptSegment]]:
+    ) -> list[TranscriptSegment] | None:
         """Checks for existing successful transcription and returns segments if valid.
 
         NOTE: Defaults to using self.db_session for queries to keep a single session,
@@ -99,7 +99,7 @@ class TranscriptionManager:
             self.logger.info(
                 f"Found existing successful Whisper ModelCall {existing_whisper_call.id} for post {post.id}."
             )
-            db_segments: List[TranscriptSegment] = (
+            db_segments: list[TranscriptSegment] = (
                 segment_query.filter_by(post_id=post.id)
                 .order_by(TranscriptSegment.sequence_num)
                 .all()
@@ -126,6 +126,16 @@ class TranscriptionManager:
             )
         return None
 
+    def get_reusable_transcription(
+        self, post: Post, language: str | None = None
+    ) -> list[TranscriptSegment] | None:
+        """Return existing transcript segments only when they are reusable as-is."""
+        feed_language = getattr(getattr(post, "feed", None), "language", None)
+        effective_language = self._effective_language(
+            language if language is not None else feed_language
+        )
+        return self._check_existing_transcription(post, effective_language)
+
     def _get_or_create_whisper_model_call(self, post: Post, language: str) -> ModelCall:
         """Create or reuse the placeholder ModelCall row for a Whisper run via writer."""
         result = writer_client.action(
@@ -151,9 +161,7 @@ class TranscriptionManager:
             raise RuntimeError(f"ModelCall {model_call_id} not found after upsert")
         return model_call
 
-    def transcribe(
-        self, post: Post, language: Optional[str] = None
-    ) -> List[TranscriptSegment]:
+    def transcribe(self, post: Post, language: str | None = None) -> list[TranscriptSegment]:
         """
         Transcribes a podcast audio file, or retrieves existing transcription.
 
@@ -223,7 +231,7 @@ class TranscriptionManager:
                 if self._segment_query_provided
                 else self.db_session.query(TranscriptSegment)
             )
-            db_segments: List[TranscriptSegment] = (
+            db_segments: list[TranscriptSegment] = (
                 segment_query.filter_by(post_id=post.id)
                 .order_by(TranscriptSegment.sequence_num)
                 .all()

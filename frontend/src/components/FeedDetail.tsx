@@ -7,11 +7,12 @@ import DownloadButton from './DownloadButton';
 import PlayButton from './PlayButton';
 import ProcessingStatsButton from './ProcessingStatsButton';
 import EpisodeProcessingStatus from './EpisodeProcessingStatus';
+import FeedSettingsModal from './FeedSettingsModal';
+import FeedSubscribersModal from './FeedSubscribersModal';
 import { useAuth } from '../contexts/AuthContext';
 import { copyToClipboard } from '../utils/clipboard';
 import { emitDiagnosticError } from '../utils/diagnostics';
 import { getHttpErrorInfo } from '../utils/httpError';
-import { WHISPER_LANGUAGES } from '../constants/whisperLanguages';
 
 interface FeedDetailProps {
   feed: Feed;
@@ -20,6 +21,36 @@ interface FeedDetailProps {
 }
 
 type SortOption = 'newest' | 'oldest' | 'title';
+type EpisodeDescriptionView = 'source' | 'podly';
+
+const EPISODE_DESCRIPTION_VIEW_STORAGE_KEY_PREFIX = 'podly:episode-description-view:feed:';
+
+function getEpisodeDescriptionViewStorageKey(feedId: number): string {
+  return `${EPISODE_DESCRIPTION_VIEW_STORAGE_KEY_PREFIX}${feedId}`;
+}
+
+function loadEpisodeDescriptionView(feedId: number): EpisodeDescriptionView {
+  if (typeof window === 'undefined') {
+    return 'source';
+  }
+  const rawValue = window.localStorage.getItem(
+    getEpisodeDescriptionViewStorageKey(feedId)
+  );
+  return rawValue === 'podly' ? 'podly' : 'source';
+}
+
+function persistEpisodeDescriptionView(
+  feedId: number,
+  view: EpisodeDescriptionView
+): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  window.localStorage.setItem(
+    getEpisodeDescriptionViewStorageKey(feedId),
+    view
+  );
+}
 
 interface ProcessingEstimate {
   post_guid: string;
@@ -40,15 +71,177 @@ export default function FeedDetail({ feed, onClose, onFeedDeleted }: FeedDetailP
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const feedHeaderRef = useRef<HTMLDivElement>(null);
   const [currentFeed, setCurrentFeed] = useState(feed);
+  const [expandedDescriptions, setExpandedDescriptions] = useState<Set<string>>(new Set());
   const [pendingEpisode, setPendingEpisode] = useState<Episode | null>(null);
   const [showProcessingModal, setShowProcessingModal] = useState(false);
   const [processingEstimate, setProcessingEstimate] = useState<ProcessingEstimate | null>(null);
   const [isEstimating, setIsEstimating] = useState(false);
   const [estimateError, setEstimateError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [episodeDescriptionView, setEpisodeDescriptionView] =
+    useState<EpisodeDescriptionView>(() => loadEpisodeDescriptionView(feed.id));
+  const handleEpisodeDescriptionViewChange = (view: EpisodeDescriptionView) => {
+    setEpisodeDescriptionView(view);
+    persistEpisodeDescriptionView(currentFeed.id, view);
+  };
+  const [showSubscribersModal, setShowSubscribersModal] = useState(false);
 
   const isAdmin = !requireAuth || user?.role === 'admin';
   const whitelistedOnly = requireAuth && !isAdmin;
+
+  type DescriptionToken =
+    | { type: 'text'; value: string }
+    | { type: 'link'; href: string; text: string }
+    | { type: 'newline' };
+
+  const tokenizeDescription = (rawDescription: string): DescriptionToken[] => {
+    if (typeof document === 'undefined') {
+      return [{ type: 'text', value: rawDescription }];
+    }
+
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(rawDescription, 'text/html');
+    const tokens: DescriptionToken[] = [];
+    const blockTags = new Set(['p', 'div', 'li', 'ul', 'ol']);
+
+    const pushText = (text: string) => {
+      if (!text) {
+        return;
+      }
+      const parts = text.split(/\r?\n/);
+      parts.forEach((part, index) => {
+        if (part) {
+          tokens.push({ type: 'text', value: part });
+        }
+        if (index < parts.length - 1) {
+          tokens.push({ type: 'newline' });
+        }
+      });
+    };
+
+    const visitNode = (node: Node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        pushText(node.textContent ?? '');
+        return;
+      }
+
+      if (node.nodeType !== Node.ELEMENT_NODE) {
+        return;
+      }
+
+      const element = node as HTMLElement;
+      const tag = element.tagName.toLowerCase();
+
+      if (tag === 'br') {
+        tokens.push({ type: 'newline' });
+        return;
+      }
+
+      if (tag === 'a') {
+        const href = element.getAttribute('href');
+        const text = element.textContent ?? '';
+        if (href) {
+          tokens.push({ type: 'link', href, text: text || href });
+        } else {
+          pushText(text);
+        }
+        return;
+      }
+
+      if (blockTags.has(tag)) {
+        tokens.push({ type: 'newline' });
+        element.childNodes.forEach(visitNode);
+        tokens.push({ type: 'newline' });
+        return;
+      }
+
+      element.childNodes.forEach(visitNode);
+    };
+
+    doc.body.childNodes.forEach(visitNode);
+
+    const normalized: DescriptionToken[] = [];
+    for (const token of tokens) {
+      const last = normalized[normalized.length - 1];
+      if (token.type === 'text') {
+        const cleaned = token.value.replace(/[ \t]+/g, ' ');
+        if (!cleaned) {
+          continue;
+        }
+        if (last?.type === 'text') {
+          last.value += cleaned;
+        } else {
+          normalized.push({ type: 'text', value: cleaned });
+        }
+        continue;
+      }
+
+      if (token.type === 'newline') {
+        if (last?.type !== 'newline') {
+          normalized.push(token);
+        }
+        continue;
+      }
+
+      normalized.push(token);
+    }
+
+    while (normalized[0]?.type === 'newline') {
+      normalized.shift();
+    }
+    while (normalized[normalized.length - 1]?.type === 'newline') {
+      normalized.pop();
+    }
+
+    return normalized;
+  };
+
+  const renderDescriptionTokens = (tokens: DescriptionToken[]) =>
+    tokens.map((token, index) => {
+      if (token.type === 'newline') {
+        return (
+          <span key={`newline-${index}`}>
+            {'\n'}
+          </span>
+        );
+      }
+
+      if (token.type === 'link') {
+        return (
+          <a
+            key={`link-${index}`}
+            href={token.href}
+            target="_blank"
+            rel="noreferrer"
+            className="text-blue-600 hover:underline"
+          >
+            {token.text}
+          </a>
+        );
+      }
+
+      return (
+        <span key={`text-${index}`}>
+          {token.value}
+        </span>
+      );
+    });
+
+  const tokensToPlainText = (tokens: DescriptionToken[]) =>
+    tokens
+      .map((token) => {
+        if (token.type === 'text') {
+          return token.value;
+        }
+        if (token.type === 'link') {
+          return token.text;
+        }
+        return ' • ';
+      })
+      .join('')
+      .replace(/\s+/g, ' ')
+      .trim();
 
   const { data: configResponse } = useQuery<ConfigResponse>({
     queryKey: ['config'],
@@ -119,60 +312,6 @@ export default function FeedDetail({ feed, onClose, onFeedDeleted }: FeedDetailP
           feedId: currentFeed.id,
         },
       });
-    },
-  });
-
-  const updateFeedSettingsMutation = useMutation({
-    mutationFn: (override: boolean | null) =>
-      feedsApi.updateFeedSettings(currentFeed.id, {
-        auto_whitelist_new_episodes_override: override,
-      }),
-    onSuccess: (data) => {
-      setCurrentFeed((cur) => (cur.id === data.id ? data : cur));
-      queryClient.invalidateQueries({ queryKey: ['feeds'] });
-      toast.success('Feed settings updated');
-    },
-    onError: (err) => {
-      const { status, data, message } = getHttpErrorInfo(err);
-      emitDiagnosticError({
-        title: 'Failed to update feed settings',
-        message,
-        kind: status ? 'http' : 'network',
-        details: {
-          status,
-          response: data,
-          feedId: currentFeed.id,
-        },
-      });
-      toast.error('Failed to update feed settings');
-    },
-  });
-
-  const updateLanguageMutation = useMutation({
-    mutationFn: (language: string | null) =>
-      feedsApi.updateFeedSettings(currentFeed.id, { language }),
-    onSuccess: (data) => {
-      // Apply the server's returned feed locally — HomePage holds
-      // `selectedFeed` as a snapshot, so without this write the
-      // dropdown stays on the old value. Guarded against the user
-      // having switched feeds before the PATCH resolved.
-      setCurrentFeed((cur) => (cur.id === data.id ? data : cur));
-      queryClient.invalidateQueries({ queryKey: ['feeds'] });
-      toast.success('Feed settings updated');
-    },
-    onError: (err) => {
-      const { status, data, message } = getHttpErrorInfo(err);
-      emitDiagnosticError({
-        title: 'Failed to update feed settings',
-        message,
-        kind: status ? 'http' : 'network',
-        details: {
-          status,
-          response: data,
-          feedId: currentFeed.id,
-        },
-      });
-      toast.error('Failed to update feed settings');
     },
   });
 
@@ -252,6 +391,14 @@ export default function FeedDetail({ feed, onClose, onFeedDeleted }: FeedDetailP
   useEffect(() => {
     setCurrentFeed(feed);
   }, [feed]);
+
+  useEffect(() => {
+    setEpisodeDescriptionView(loadEpisodeDescriptionView(currentFeed.id));
+  }, [currentFeed.id]);
+
+  useEffect(() => {
+    setExpandedDescriptions(new Set());
+  }, [feed.id, episodeDescriptionView]);
 
   useEffect(() => {
     setPage(1);
@@ -350,16 +497,6 @@ export default function FeedDetail({ feed, onClose, onFeedDeleted }: FeedDetailP
     setEstimateError(null);
   };
 
-  const handleAutoWhitelistOverrideChange = (value: string) => {
-    const override =
-      value === 'inherit' ? null : value === 'on';
-    updateFeedSettingsMutation.mutate(override);
-  };
-
-  const handleLanguageChange = (value: string) => {
-    updateLanguageMutation.mutate(value === '' ? null : value);
-  };
-
   const isMember = Boolean(currentFeed.is_member);
   const isActiveSubscription = currentFeed.is_active_subscription !== false;
 
@@ -372,20 +509,6 @@ export default function FeedDetail({ feed, onClose, onFeedDeleted }: FeedDetailP
   const showWhitelistUi = canModifyEpisodes && isAdmin;
   const appAutoWhitelistDefault =
     configResponse?.config?.app?.automatically_whitelist_new_episodes;
-  const autoWhitelistDefaultLabel =
-    appAutoWhitelistDefault === undefined
-      ? 'Unknown'
-      : appAutoWhitelistDefault
-        ? 'On'
-        : 'Off';
-  const autoWhitelistOverrideValue =
-    currentFeed.auto_whitelist_new_episodes_override ?? null;
-  const autoWhitelistSelectValue =
-    autoWhitelistOverrideValue === true
-      ? 'on'
-      : autoWhitelistOverrideValue === false
-        ? 'off'
-        : 'inherit';
 
   const episodes = episodesPage?.items ?? [];
   const totalCount = episodesPage?.total ?? 0;
@@ -494,7 +617,7 @@ export default function FeedDetail({ feed, onClose, onFeedDeleted }: FeedDetailP
   };
 
   return (
-    <div className="h-full flex flex-col bg-white relative">
+    <div className="h-full flex flex-col bg-white relative dark:bg-slate-950/40">
       {/* Mobile Header */}
       <div className="flex items-center justify-between p-4 border-b lg:hidden">
         <h2 className="text-lg font-semibold text-gray-900">Podcast Details</h2>
@@ -511,7 +634,7 @@ export default function FeedDetail({ feed, onClose, onFeedDeleted }: FeedDetailP
       </div>
 
       {/* Sticky Header - appears when scrolling */}
-      <div className={`absolute top-16 lg:top-0 left-0 right-0 z-10 bg-white border-b transition-all duration-300 ${
+      <div className={`absolute top-16 lg:top-0 left-0 right-0 z-10 bg-white border-b dark:bg-slate-950/95 dark:border-slate-700 transition-all duration-300 ${
         showStickyHeader ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-full pointer-events-none'
       }`}>
         <div className="p-4">
@@ -579,6 +702,13 @@ export default function FeedDetail({ feed, onClose, onFeedDeleted }: FeedDetailP
                 </div>
                 {requireAuth && isAdmin && (
                   <div className="mt-2 flex items-center gap-2 flex-wrap text-sm">
+                    <button
+                      onClick={() => setShowSubscribersModal(true)}
+                      className="px-2 py-1 rounded-full text-xs font-medium border bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100 transition-colors"
+                      title="View subscribers"
+                    >
+                      {currentFeed.member_count ?? 0} subscriber{(currentFeed.member_count ?? 0) !== 1 ? 's' : ''}
+                    </button>
                     <span
                       className={`px-2 py-1 rounded-full text-xs font-medium border ${
                         isMember
@@ -599,13 +729,13 @@ export default function FeedDetail({ feed, onClose, onFeedDeleted }: FeedDetailP
             </div>
 
             {/* RSS Button and Menu */}
-            <div className="flex items-center gap-3">
+            <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
               {/* Podly RSS Subscribe Button */}
               {showPodlyRssButton && (
                 <button
                   onClick={handleCopyRssToClipboard}
                   title="Copy Podly RSS feed URL"
-                  className={`flex items-center gap-3 px-5 py-2 bg-black hover:bg-gray-900 text-white rounded-lg font-medium transition-colors ${
+                  className={`flex w-full items-center justify-center gap-3 rounded-lg bg-black px-4 py-3 text-center font-medium text-white transition-colors hover:bg-gray-900 sm:w-auto sm:justify-start sm:px-5 sm:py-2 ${
                     !canSubscribe ? 'opacity-60 cursor-not-allowed' : ''
                   }`}
                   disabled={!canSubscribe}
@@ -613,7 +743,7 @@ export default function FeedDetail({ feed, onClose, onFeedDeleted }: FeedDetailP
                   <img
                     src="/rss-round-color-icon.svg"
                     alt="Podly RSS"
-                    className="w-6 h-6"
+                    className="h-6 w-6 shrink-0"
                     aria-hidden="true"
                   />
                   <span className="text-white">
@@ -622,58 +752,80 @@ export default function FeedDetail({ feed, onClose, onFeedDeleted }: FeedDetailP
                 </button>
               )}
 
-              {requireAuth && isAdmin && !isMember && (
-                <button
-                  onClick={() => joinFeedMutation.mutate()}
-                  disabled={joinFeedMutation.isPending}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors ${
-                    joinFeedMutation.isPending
-                      ? 'bg-blue-100 text-blue-300 cursor-not-allowed'
-                      : 'bg-blue-600 text-white hover:bg-blue-700'
-                  }`}
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                  </svg>
-                  Join feed
-                </button>
-              )}
+              <div className="flex w-full items-center gap-3 sm:w-auto sm:flex-1 sm:flex-wrap">
+                {requireAuth && isAdmin && !isMember && (
+                  <button
+                    onClick={() => joinFeedMutation.mutate()}
+                    disabled={joinFeedMutation.isPending}
+                    className={`flex h-11 flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2 font-medium whitespace-nowrap transition-colors sm:h-auto sm:flex-none ${
+                      joinFeedMutation.isPending
+                        ? 'bg-blue-100 text-blue-300 cursor-not-allowed'
+                        : 'bg-blue-600 text-white hover:bg-blue-700'
+                    }`}
+                  >
+                    <svg className="h-4 w-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                    </svg>
+                    <span>Join feed</span>
+                  </button>
+                )}
 
-              {canModifyEpisodes && (
-                <button
-                  onClick={() => refreshFeedMutation.mutate()}
-                  disabled={refreshFeedMutation.isPending}
-                  title="Refresh feed from source"
-                  className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors ${
-                    refreshFeedMutation.isPending
-                      ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                  }`}
-                >
-                  <img
-                    className={`w-4 h-4 ${refreshFeedMutation.isPending ? 'animate-spin' : ''}`}
-                    src="/reload-icon.svg"
-                    alt="Refresh feed"
-                    aria-hidden="true"
-                  />
-                  <span>Refresh Feed</span>
-                </button>
-              )}
+                {canModifyEpisodes && (
+                  <button
+                    onClick={() => refreshFeedMutation.mutate()}
+                    disabled={refreshFeedMutation.isPending}
+                    title="Refresh feed from source"
+                    className={`flex h-11 flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2 font-medium whitespace-nowrap transition-colors sm:h-auto sm:flex-none ${
+                      refreshFeedMutation.isPending
+                        ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    }`}
+                  >
+                    <svg
+                      className={`h-4 w-4 shrink-0 ${refreshFeedMutation.isPending ? 'animate-spin' : ''}`}
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+                      <path d="M21 3v6h-6" />
+                    </svg>
+                    <span>Refresh Feed</span>
+                  </button>
+                )}
 
-              {/* Ellipsis Menu */}
-              <div className="relative menu-container">
-                <button
-                  onClick={() => setShowMenu(!showMenu)}
-                  className="w-10 h-10 rounded-lg bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-600 hover:text-gray-800 transition-colors"
-                >
-                  <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/>
-                  </svg>
-                </button>
+                {/* Settings Button (cog) */}
+                {isAdmin && (
+                  <button
+                    onClick={() => setShowSettingsModal(true)}
+                    title="Feed settings"
+                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-gray-100 text-gray-600 transition-colors hover:bg-gray-200 hover:text-gray-800"
+                  >
+                    <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    </svg>
+                  </button>
+                )}
 
-                {/* Dropdown Menu */}
-                {showMenu && (
-                  <div className="absolute top-full right-0 mt-1 w-56 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-20 max-w-[calc(100vw-2rem)]">
+                {/* Ellipsis Menu */}
+                <div className="relative menu-container shrink-0">
+                  <button
+                    onClick={() => setShowMenu(!showMenu)}
+                    className="flex h-11 w-11 items-center justify-center rounded-lg bg-gray-100 text-gray-600 transition-colors hover:bg-gray-200 hover:text-gray-800"
+                  >
+                    <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 24 24">
+                      <path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/>
+                    </svg>
+                  </button>
+
+                  {/* Dropdown Menu */}
+                  {showMenu && (
+                    <div className="absolute top-full right-0 mt-1 w-56 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-20 max-w-[calc(100vw-2rem)]">
                       {canBulkModifyEpisodes && (
                         <>
                           <button
@@ -768,8 +920,9 @@ export default function FeedDetail({ feed, onClose, onFeedDeleted }: FeedDetailP
                         </button>
                       </>
                     )}
-                  </div>
-                )}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -777,67 +930,6 @@ export default function FeedDetail({ feed, onClose, onFeedDeleted }: FeedDetailP
             {currentFeed.description && (
               <div className="text-gray-700 leading-relaxed">
                 <p>{currentFeed.description.replace(/<[^>]*>/g, '')}</p>
-              </div>
-            )}
-
-            {isAdmin && (
-              <div className="flex flex-col sm:flex-row gap-4">
-                <div className="flex-1 rounded-lg border border-gray-200 bg-gray-50 p-4">
-                  <div className="flex flex-col gap-2">
-                    <div>
-                      <label htmlFor="auto-whitelist-select" className="text-sm font-medium text-gray-900">
-                        Auto-whitelist new episodes
-                      </label>
-                      <p className="text-xs text-gray-600">
-                        Overrides the global setting. Global default: {autoWhitelistDefaultLabel}.
-                      </p>
-                    </div>
-                    <select
-                      id="auto-whitelist-select"
-                      value={autoWhitelistSelectValue}
-                      onChange={(e) => handleAutoWhitelistOverrideChange(e.target.value)}
-                      disabled={updateFeedSettingsMutation.isPending}
-                      className={`text-sm border border-gray-300 rounded-md px-3 py-2 bg-white ${
-                        updateFeedSettingsMutation.isPending
-                          ? 'opacity-60 cursor-not-allowed'
-                          : ''
-                      }`}
-                    >
-                      <option value="inherit">Use global setting ({autoWhitelistDefaultLabel})</option>
-                      <option value="on">On</option>
-                      <option value="off">Off</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="flex-1 rounded-lg border border-gray-200 bg-gray-50 p-4">
-                  <div className="flex flex-col gap-2">
-                    <div>
-                      <label htmlFor="transcription-language-select" className="text-sm font-medium text-gray-900">
-                        Transcription language
-                      </label>
-                      <p className="text-xs text-gray-600">
-                        Overrides the global Whisper language setting for this feed.
-                      </p>
-                    </div>
-                    <select
-                      id="transcription-language-select"
-                      value={currentFeed.language ?? ''}
-                      onChange={(e) => handleLanguageChange(e.target.value)}
-                      disabled={updateLanguageMutation.isPending}
-                      className={`text-sm border border-gray-300 rounded-md px-3 py-2 bg-white ${
-                        updateLanguageMutation.isPending ? 'opacity-60 cursor-not-allowed' : ''
-                      }`}
-                    >
-                      <option value="">Use global setting</option>
-                      {WHISPER_LANGUAGES.map((lang) => (
-                        <option key={lang.code} value={lang.code}>
-                          {lang.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
               </div>
             )}
           </div>
@@ -957,11 +1049,68 @@ export default function FeedDetail({ feed, onClose, onFeedDeleted }: FeedDetailP
                     </div>
 
                     {/* Episode Description */}
-                    {episode.description && (
+                    {(
+                      episodeDescriptionView === 'podly'
+                        ? (episode.podly_description_html || episode.description)
+                        : episode.description
+                    ) && (
                       <div className="text-left">
-                        <p className="text-sm text-gray-500 line-clamp-3">
-                          {episode.description.replace(/<[^>]*>/g, '').substring(0, 300)}...
-                        </p>
+                        {(() => {
+                          const descriptionHtml =
+                            episodeDescriptionView === 'podly'
+                              ? (episode.podly_description_html || episode.description)
+                              : episode.description;
+                          const descriptionTokens = tokenizeDescription(descriptionHtml);
+                          const descriptionLength = descriptionTokens.reduce((total, token) => {
+                            if (token.type === 'text') {
+                              return total + token.value.length;
+                            }
+                            if (token.type === 'link') {
+                              return total + token.text.length;
+                            }
+                            return total + 1;
+                          }, 0);
+                          const isExpanded = expandedDescriptions.has(episode.guid);
+                          const shouldTruncate = descriptionLength > 300;
+                          const isTruncated = !isExpanded && shouldTruncate;
+                          const plainText = tokensToPlainText(descriptionTokens);
+                          const truncatedText = isTruncated
+                            ? `${plainText.slice(0, 300)}…`
+                            : plainText;
+                          return (
+                            <>
+                              {isExpanded ? (
+                                <p className="text-sm text-gray-500 whitespace-pre-line">
+                                  {renderDescriptionTokens(descriptionTokens)}
+                                </p>
+                              ) : (
+                                <p className="text-sm text-gray-500 line-clamp-3">
+                                  {truncatedText}
+                                </p>
+                              )}
+                              {shouldTruncate && (
+                                <button
+                                  type="button"
+                                  aria-expanded={isExpanded}
+                                  onClick={() => {
+                                    setExpandedDescriptions((prev) => {
+                                      const next = new Set(prev);
+                                      if (isExpanded) {
+                                        next.delete(episode.guid);
+                                      } else {
+                                        next.add(episode.guid);
+                                      }
+                                      return next;
+                                    });
+                                  }}
+                                  className="mt-2 inline-flex items-center text-xs font-medium text-gray-500 underline-offset-2 transition hover:text-gray-700 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-300/60"
+                                >
+                                  {isExpanded ? 'Show less' : 'Show more'}
+                                </button>
+                              )}
+                            </>
+                          );
+                        })()}
                       </div>
                     )}
 
@@ -1017,16 +1166,15 @@ export default function FeedDetail({ feed, onClose, onFeedDeleted }: FeedDetailP
 
                     {/* Bottom Controls - only show if episode is whitelisted */}
                     {episode.whitelisted && (
-                      <div className="flex items-center justify-between">
-                        {/* Left side: Download buttons */}
-                        <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2">
+                        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
                           <DownloadButton
                             episodeGuid={episode.guid}
                             isWhitelisted={episode.whitelisted}
                             hasProcessedAudio={episode.has_processed_audio}
                             feedId={currentFeed.id}
                             canModifyEpisodes={canModifyEpisodes}
-                            className="min-w-[100px]"
+                            className="min-w-[100px] shrink-0"
                           />
 
                           <EpisodeProcessingStatus
@@ -1039,18 +1187,16 @@ export default function FeedDetail({ feed, onClose, onFeedDeleted }: FeedDetailP
                           <ProcessingStatsButton
                             episodeGuid={episode.guid}
                             hasProcessedAudio={episode.has_processed_audio}
+                            adDetectionStrategy={currentFeed.ad_detection_strategy}
                           />
                         </div>
 
-                        {/* Right side: Play button */}
-                        <div className="flex-shrink-0 w-12 flex justify-end">
-                          {episode.has_processed_audio && (
-                            <PlayButton
-                              episode={episode}
-                              className="ml-2"
-                            />
-                          )}
-                        </div>
+                        {episode.has_processed_audio && (
+                          <PlayButton
+                            episode={episode}
+                            className="ml-auto shrink-0"
+                          />
+                        )}
                       </div>
                     )}
                   </div>
@@ -1146,6 +1292,26 @@ export default function FeedDetail({ feed, onClose, onFeedDeleted }: FeedDetailP
             </div>
           </div>
         </div>
+      )}
+
+      <FeedSettingsModal
+        feed={currentFeed}
+        isOpen={showSettingsModal}
+        onClose={() => setShowSettingsModal(false)}
+        autoWhitelistGlobalDefault={appAutoWhitelistDefault}
+        llmChapterFallbackGlobalDefault={
+          configResponse?.config?.llm?.enable_llm_chapter_fallback_tagging
+        }
+        episodeDescriptionView={episodeDescriptionView}
+        onEpisodeDescriptionViewChange={handleEpisodeDescriptionViewChange}
+      />
+
+      {showSubscribersModal && (
+        <FeedSubscribersModal
+          feedId={currentFeed.id}
+          feedTitle={currentFeed.title}
+          onClose={() => setShowSubscribersModal(false)}
+        />
       )}
     </div>
   );

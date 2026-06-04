@@ -33,23 +33,24 @@ def _make_feed(rss_url="http://example.com/feed.rss", language=None):
 def test_update_feed_settings_language_valid(app):
     with app.app_context():
         feed = _make_feed()
+        feed_id = feed.id
         client = _make_client(app)
 
+        def _writer_update_side_effect(
+            model_name: str, model_id: int, updates: dict, wait: bool = True
+        ):
+            assert model_name == "Feed"
+            assert model_id == feed_id
+            assert updates == {"language": "de"}
+            Feed.query.filter_by(id=model_id).update(updates)
+            db.session.commit()
+            return SimpleNamespace(success=True)
+
         with mock.patch("app.routes.feed_routes.writer_client") as mock_writer:
-
-            def side_effect(action, params, wait=False):
-                if action == "update_feed_settings":
-                    assert params == {"feed_id": feed.id, "language": "de"}
-                    Feed.query.filter_by(id=params["feed_id"]).update(
-                        {"language": params["language"]}
-                    )
-                    db.session.commit()
-                return SimpleNamespace(success=True)
-
-            mock_writer.action.side_effect = side_effect
+            mock_writer.update.side_effect = _writer_update_side_effect
 
             response = client.patch(
-                f"/api/feeds/{feed.id}/settings",
+                f"/api/feeds/{feed_id}/settings",
                 json={"language": "de"},
             )
 
@@ -61,23 +62,24 @@ def test_update_feed_settings_language_valid(app):
 def test_update_feed_settings_language_null_clears(app):
     with app.app_context():
         feed = _make_feed(rss_url="http://example.com/feed2.rss", language="de")
+        feed_id = feed.id
         client = _make_client(app)
 
+        def _writer_update_side_effect(
+            model_name: str, model_id: int, updates: dict, wait: bool = True
+        ):
+            assert model_name == "Feed"
+            assert model_id == feed_id
+            assert updates == {"language": None}
+            Feed.query.filter_by(id=model_id).update(updates)
+            db.session.commit()
+            return SimpleNamespace(success=True)
+
         with mock.patch("app.routes.feed_routes.writer_client") as mock_writer:
-
-            def side_effect(action, params, wait=False):
-                if action == "update_feed_settings":
-                    assert params == {"feed_id": feed.id, "language": None}
-                    Feed.query.filter_by(id=params["feed_id"]).update(
-                        {"language": params["language"]}
-                    )
-                    db.session.commit()
-                return SimpleNamespace(success=True)
-
-            mock_writer.action.side_effect = side_effect
+            mock_writer.update.side_effect = _writer_update_side_effect
 
             response = client.patch(
-                f"/api/feeds/{feed.id}/settings",
+                f"/api/feeds/{feed_id}/settings",
                 json={"language": None},
             )
 

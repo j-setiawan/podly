@@ -2,6 +2,7 @@ import axios from 'axios';
 import { diagnostics } from '../utils/diagnostics';
 import type {
   Feed,
+  FeedSettingsUpdate,
   Episode,
   Job,
   JobManagerStatus,
@@ -15,6 +16,9 @@ import type {
   BillingSummary,
   LandingStatus,
   PagedResult,
+  CostSummary,
+  CallLog,
+  FeedSubscribersResponse,
 } from '../types';
 
 const API_BASE_URL = '';
@@ -143,14 +147,13 @@ export const feedsApi = {
     return response.data;
   },
 
-  updateFeedSettings: async (
-    feedId: number,
-    // Server rejects {} with 400; require at least one settable field.
-    settings:
-      | { auto_whitelist_new_episodes_override: boolean | null; language?: string | null }
-      | { auto_whitelist_new_episodes_override?: boolean | null; language: string | null }
-  ): Promise<Feed> => {
+  updateFeedSettings: async (feedId: number, settings: FeedSettingsUpdate): Promise<Feed> => {
     const response = await api.patch(`/api/feeds/${feedId}/settings`, settings);
+    return response.data;
+  },
+
+  getSubscribers: async (feedId: number): Promise<FeedSubscribersResponse> => {
+    const response = await api.get(`/api/feeds/${feedId}/subscribers`);
     return response.data;
   },
 
@@ -187,11 +190,19 @@ export const feedsApi = {
     return response.data;
   },
 
+  reprocessPostKeepTranscript: async (
+    guid: string
+  ): Promise<{ status: string; job_id?: string; message: string; download_url?: string }> => {
+    const response = await api.post(`/api/posts/${guid}/reprocess/keep-transcript`);
+    return response.data;
+  },
+
   getPostStatus: async (guid: string): Promise<{
     status: string;
     step: number;
     step_name: string;
     total_steps: number;
+    progress_percentage?: number;
     message: string;
     download_url?: string;
     error?: string;
@@ -266,6 +277,7 @@ export const feedsApi = {
       whitelisted: boolean;
       has_processed_audio: boolean;
     };
+    ad_detection_strategy: 'llm' | 'chapter' | 'chapter_insert';
     processing_stats: {
       total_segments: number;
       total_model_calls: number;
@@ -274,6 +286,11 @@ export const feedsApi = {
       ad_segments_count: number;
       ad_percentage: number;
       estimated_ad_time_seconds: number;
+      original_duration_seconds: number;
+      ad_blocks?: Array<{
+        start_time: number;
+        end_time: number;
+      }>;
       model_call_statuses: Record<string, number>;
       model_types: Record<string, number>;
     };
@@ -317,6 +334,59 @@ export const feedsApi = {
       segment_text: string;
       mixed: boolean;
     }>;
+    debug_info?: {
+      post_id: number;
+      feed_id: number;
+      guid: string;
+      download_url: string;
+      download_count: number | null;
+      has_processed_audio: boolean;
+      has_unprocessed_audio: boolean;
+      processed_audio: {
+        path: string | null;
+        absolute_path: string | null;
+        exists: boolean;
+        is_file: boolean;
+        size_bytes: number | null;
+        error?: string;
+      };
+      unprocessed_audio: {
+        path: string | null;
+        absolute_path: string | null;
+        exists: boolean;
+        is_file: boolean;
+        size_bytes: number | null;
+        error?: string;
+      };
+      processed_audio_path_candidates: Array<{
+        path: string;
+        exists: boolean;
+        size_bytes: number | null;
+        error?: string;
+      }>;
+      processing_roots: {
+        in_root: string;
+        srv_root: string;
+      };
+      record_counts: {
+        transcript_segments: number;
+        model_calls: number;
+        identifications: number;
+      };
+    };
+    chapters: {
+      total_chapters: number;
+      chapters_kept: number;
+      chapters_removed: number;
+      filter_strings: string[];
+      chapters: Array<{
+        title: string;
+        start_time: number;
+        end_time: number;
+        label: 'content' | 'ad';
+      }>;
+      note?: string;
+    } | null;
   }> => {
     const response = await api.get(`/api/posts/${guid}/stats`);
     return response.data;
@@ -347,6 +417,7 @@ export const feedsApi = {
     step: number;
     step_name: string;
     total_steps: number;
+    progress_percentage?: number;
     message: string;
     download_url?: string;
     error?: string;
@@ -375,6 +446,11 @@ export const feedsApi = {
       ad_segments_count: number;
       ad_percentage: number;
       estimated_ad_time_seconds: number;
+      original_duration_seconds: number;
+      ad_blocks?: Array<{
+        start_time: number;
+        end_time: number;
+      }>;
       model_call_statuses: Record<string, number>;
       model_types: Record<string, number>;
     };
@@ -418,6 +494,46 @@ export const feedsApi = {
       segment_text: string;
       mixed: boolean;
     }>;
+    debug_info?: {
+      post_id: number;
+      feed_id: number;
+      guid: string;
+      download_url: string;
+      download_count: number | null;
+      has_processed_audio: boolean;
+      has_unprocessed_audio: boolean;
+      processed_audio: {
+        path: string | null;
+        absolute_path: string | null;
+        exists: boolean;
+        is_file: boolean;
+        size_bytes: number | null;
+        error?: string;
+      };
+      unprocessed_audio: {
+        path: string | null;
+        absolute_path: string | null;
+        exists: boolean;
+        is_file: boolean;
+        size_bytes: number | null;
+        error?: string;
+      };
+      processed_audio_path_candidates: Array<{
+        path: string;
+        exists: boolean;
+        size_bytes: number | null;
+        error?: string;
+      }>;
+      processing_roots: {
+        in_root: string;
+        srv_root: string;
+      };
+      record_counts: {
+        transcript_segments: number;
+        model_calls: number;
+        identifications: number;
+      };
+    };
   }> => {
     return feedsApi.getPostStats(guid);
   },
@@ -605,6 +721,25 @@ export const billingApi = {
   },
 };
 
+export const costsApi = {
+  getCosts: async (year: number, month: number): Promise<CostSummary> => {
+    const response = await api.get('/api/admin/costs', { params: { year, month } });
+    return response.data;
+  },
+  getCalls: async (page: number = 1, perPage: number = 50): Promise<CallLog> => {
+    const response = await api.get('/api/admin/costs/calls', { params: { page, per_page: perPage } });
+    return response.data;
+  },
+  cleanupCancelledFeeds: async (): Promise<{ removed: number }> => {
+    const response = await api.post('/api/admin/costs/cleanup/cancelled-feeds');
+    return response.data;
+  },
+  cleanupOrphanFeeds: async (): Promise<{ removed: number }> => {
+    const response = await api.post('/api/admin/costs/cleanup/orphan-feeds');
+    return response.data;
+  },
+};
+
 export const jobsApi = {
   getActiveJobs: async (limit: number = 100): Promise<Job[]> => {
     const response = await api.get('/api/jobs/active', { params: { limit } });
@@ -616,6 +751,10 @@ export const jobsApi = {
   },
   cancelJob: async (jobId: string): Promise<{ status: string; job_id: string; message: string }> => {
     const response = await api.post(`/api/jobs/${jobId}/cancel`);
+    return response.data;
+  },
+  cancelQueuedJobs: async (): Promise<{ status: string; cancelled_count: number; message: string }> => {
+    const response = await api.post('/api/jobs/cancel-queued');
     return response.data;
   },
   getJobManagerStatus: async (): Promise<JobManagerStatus> => {

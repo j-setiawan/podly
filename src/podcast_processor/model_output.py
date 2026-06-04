@@ -1,6 +1,7 @@
+import json
 import logging
 import re
-from typing import List, Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -13,16 +14,17 @@ class AdSegmentPrediction(BaseModel):
 
 
 class AdSegmentPredictionList(BaseModel):
-    ad_segments: List[AdSegmentPrediction]
-    content_type: Optional[
+    ad_segments: list[AdSegmentPrediction]
+    content_type: (
         Literal[
             "technical_discussion",
             "educational/self_promo",
             "promotional_external",
             "transition",
         ]
-    ] = None
-    confidence: Optional[float] = None
+        | None
+    ) = None
+    confidence: float | None = None
 
 
 def _attempt_json_repair(json_str: str) -> str:
@@ -91,12 +93,44 @@ def _attempt_json_repair(json_str: str) -> str:
     return repaired
 
 
+def _merge_duplicate_ad_segments(text: str) -> str:
+    """Merge duplicate ``"ad_segments"`` keys that some local LLMs produce.
+
+    Python's ``json.loads`` silently keeps only the *last* value for duplicate
+    keys, so ``{"ad_segments":[A], "ad_segments":[B]}`` would lose ``[A]``.
+    """
+    if text.count('"ad_segments"') <= 1:
+        return text
+
+    def _merge_pairs(pairs: list[tuple[str, object]]) -> dict:
+        result: dict = {}
+        for key, value in pairs:
+            if key == "ad_segments" and key in result:
+                if isinstance(result[key], list) and isinstance(value, list):
+                    result[key].extend(value)
+                else:
+                    result[key] = value
+            else:
+                result[key] = value
+        return result
+
+    try:
+        merged = json.loads(text, object_pairs_hook=_merge_pairs)
+        logger.warning(
+            "Merged duplicate ad_segments keys (%d occurrences)",
+            text.count('"ad_segments"'),
+        )
+        return json.dumps(merged)
+    except (json.JSONDecodeError, ValueError):
+        return text
+
+
 def clean_and_parse_model_output(model_output: str) -> AdSegmentPredictionList:
     start_marker, end_marker = "{", "}"
 
-    assert (
-        model_output.count(start_marker) >= 1
-    ), f"No opening brace found in: {model_output[:200]}"
+    assert model_output.count(start_marker) >= 1, (
+        f"No opening brace found in: {model_output[:200]}"
+    )
 
     start_idx = model_output.index(start_marker)
     model_output = model_output[start_idx:]
@@ -113,16 +147,18 @@ def clean_and_parse_model_output(model_output: str) -> AdSegmentPredictionList:
     model_output = model_output.replace("\n", "")
     model_output = model_output.strip()
 
+    model_output = _merge_duplicate_ad_segments(model_output)
+
     # First attempt: try to parse as-is
     try:
-        return AdSegmentPredictionList.parse_raw(model_output)
-    except Exception as first_error:
+        return AdSegmentPredictionList.model_validate_json(model_output)
+    except Exception as first_error:  # noqa: BLE001
         logger.debug(f"Initial parse failed: {first_error}")
 
         # Second attempt: try to repair truncated JSON
         try:
             repaired_output = _attempt_json_repair(model_output)
-            result = AdSegmentPredictionList.parse_raw(repaired_output)
+            result = AdSegmentPredictionList.model_validate_json(repaired_output)
             logger.info("Successfully parsed model output after JSON repair")
             return result
         except Exception as repair_error:

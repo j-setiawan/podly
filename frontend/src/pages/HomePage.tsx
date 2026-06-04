@@ -5,17 +5,27 @@ import FeedList from '../components/FeedList';
 import FeedDetail from '../components/FeedDetail';
 import AddFeedForm from '../components/AddFeedForm';
 import type { Feed, ConfigResponse } from '../types';
+import {
+  loadFeedListSortPreference,
+  persistFeedListSortPreference,
+} from '../utils/feedListSort';
+import type { FeedSortOption } from '../utils/feedListSort';
 import { toast } from 'react-hot-toast';
 import { useAuth } from '../contexts/AuthContext';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { copyToClipboard } from '../utils/clipboard';
 import { emitDiagnosticError } from '../utils/diagnostics';
 import { getHttpErrorInfo } from '../utils/httpError';
 
 export default function HomePage() {
   const navigate = useNavigate();
+  const { feedId } = useParams();
+  const location = useLocation();
   const [showAddForm, setShowAddForm] = useState(false);
   const [selectedFeed, setSelectedFeed] = useState<Feed | null>(null);
+  const [feedSortBy, setFeedSortBy] = useState<FeedSortOption>(() =>
+    loadFeedListSortPreference()
+  );
   const { requireAuth, user } = useAuth();
 
   const { data: feeds, isLoading, error, refetch } = useQuery({
@@ -70,6 +80,28 @@ export default function HomePage() {
     };
   }, [showAddForm]);
 
+  useEffect(() => {
+    if (!feeds || !feedId) {
+      if (location.pathname === '/' && selectedFeed !== null) {
+        setSelectedFeed(null);
+      }
+      return;
+    }
+
+    const parsedId = Number(feedId);
+    if (!Number.isFinite(parsedId)) {
+      if (selectedFeed !== null) {
+        setSelectedFeed(null);
+      }
+      return;
+    }
+
+    const matchingFeed = feeds.find((feed) => feed.id === parsedId) || null;
+    if (matchingFeed?.id !== selectedFeed?.id) {
+      setSelectedFeed(matchingFeed);
+    }
+  }, [feeds, feedId, location.pathname, selectedFeed]);
+
   if (isLoading) {
     return (
       <div className="flex justify-center items-center h-64">
@@ -95,6 +127,9 @@ export default function HomePage() {
     navigate('/billing');
   };
 
+  const parsedFeedId = feedId ? Number(feedId) : null;
+  const feedIdIsValid = parsedFeedId !== null && Number.isFinite(parsedFeedId);
+  const feedNotFound = feedIdIsValid && !selectedFeed;
 
   const handleCopyAggregateLink = async () => {
     try {
@@ -106,36 +141,73 @@ export default function HomePage() {
     }
   };
 
+  const handleFeedSortChange = (nextSort: FeedSortOption) => {
+    setFeedSortBy(nextSort);
+    persistFeedListSortPreference(nextSort);
+  };
+
   return (
     <div className="h-full flex flex-col lg:flex-row gap-6">
       {/* Left Panel - Feed List (hidden on mobile when feed is selected) */}
       <div className={`flex-1 lg:max-w-md xl:max-w-lg flex flex-col ${
         selectedFeed ? 'hidden lg:flex' : 'flex'
       }`}>
-        <div className="flex justify-between items-center mb-6 gap-3">
-          <h2 className="text-2xl font-bold text-gray-900">Podcast Feeds</h2>
-          <div className="flex items-center gap-2">
+        <div className="mb-6 flex min-w-0 items-center gap-3">
+          <h2 className="shrink-0 text-2xl font-bold text-gray-900">
+            Podcast Feeds
+          </h2>
+          <div className="flex min-w-0 flex-1 items-center justify-end gap-2">
+            <div className="min-w-0 flex-1">
+              <label htmlFor="feed-sort" className="sr-only">
+                Sort feeds
+              </label>
+              <select
+                id="feed-sort"
+                value={feedSortBy}
+                onChange={(event) =>
+                  handleFeedSortChange(event.target.value as FeedSortOption)
+                }
+                className="h-10 w-full rounded-md border border-gray-200 bg-white px-3 text-sm text-gray-700 transition-colors hover:bg-gray-50 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200"
+                title="Sort podcast feeds"
+              >
+                <option value="newest">Newest Episode</option>
+                <option value="oldest">Oldest Episode</option>
+                <option value="title-asc">Title A-Z</option>
+                <option value="title-desc">Title Z-A</option>
+                <option value="feed-added-oldest">Feed Added (Oldest)</option>
+                <option value="feed-added-newest">Feed Added (Newest)</option>
+              </select>
+            </div>
             {canRefreshAll && (
               <button
                 onClick={() => refreshAllMutation.mutate()}
                 disabled={refreshAllMutation.isPending}
                 title="Refresh all feeds"
-                className={`flex items-center justify-center px-3 py-2 rounded-md border transition-colors ${
+                className={`h-10 w-10 shrink-0 flex items-center justify-center rounded-md border transition-colors ${
                   refreshAllMutation.isPending
                     ? 'border-gray-200 text-gray-400 cursor-not-allowed'
                     : 'border-gray-200 text-gray-600 hover:bg-gray-100'
                 }`}
               >
-                <img
-                  src="/reload-icon.svg"
-                  alt="Refresh all"
+                <svg
                   className={`w-4 h-4 ${refreshAllMutation.isPending ? 'animate-spin' : ''}`}
-                />
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+                  <path d="M21 3v6h-6" />
+                </svg>
+                <span className="sr-only">Refresh all</span>
               </button>
             )}
             <button
               onClick={handleCopyAggregateLink}
-              className="flex items-center justify-center px-3 py-2 rounded-md border border-gray-200 text-gray-600 hover:bg-gray-100 transition-colors"
+              className="h-10 w-10 shrink-0 flex items-center justify-center rounded-md border border-gray-200 text-gray-600 hover:bg-gray-100 transition-colors"
               title="Copy your aggregate feed URL (last 3 episodes from each feed)"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -150,7 +222,7 @@ export default function HomePage() {
                   setShowAddForm((prev) => !prev);
                 }
               }}
-              className={`px-4 py-2 rounded-md font-medium transition-colors ${
+              className={`h-10 shrink-0 inline-flex items-center justify-center rounded-md px-4 font-medium transition-colors ${
                 planLimitReached
                   ? 'bg-amber-600 hover:bg-amber-700 text-white'
                   : 'bg-blue-600 hover:bg-blue-700 text-white'
@@ -166,8 +238,12 @@ export default function HomePage() {
           <FeedList 
             feeds={feeds || []} 
             onFeedDeleted={refetch}
-            onFeedSelected={setSelectedFeed}
+            onFeedSelected={(feed) => {
+              setSelectedFeed(feed);
+              navigate(`/feeds/${feed.id}`);
+            }}
             selectedFeedId={selectedFeed?.id}
+            sortBy={feedSortBy}
           />
         </div>
       </div>
@@ -179,9 +255,13 @@ export default function HomePage() {
         } flex-col bg-white rounded-lg shadow border overflow-hidden`}>
           <FeedDetail 
             feed={selectedFeed} 
-            onClose={() => setSelectedFeed(null)}
+            onClose={() => {
+              setSelectedFeed(null);
+              navigate('/');
+            }}
             onFeedDeleted={() => {
               setSelectedFeed(null);
+              navigate('/');
               refetch();
             }}
           />
@@ -189,7 +269,7 @@ export default function HomePage() {
       )}
 
       {/* Empty State for Desktop */}
-      {!selectedFeed && (
+      {!selectedFeed && !feedNotFound && (
         <div className="hidden lg:flex flex-[2] items-center justify-center bg-gray-50 rounded-lg border-2 border-dashed border-gray-300">
           <div className="text-center">
             <svg className="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -197,6 +277,18 @@ export default function HomePage() {
             </svg>
             <h3 className="mt-2 text-sm font-medium text-gray-900">No podcast selected</h3>
             <p className="mt-1 text-sm text-gray-500">Select a podcast from the list to view details and episodes.</p>
+          </div>
+        </div>
+      )}
+
+      {feedNotFound && (
+        <div className="hidden lg:flex flex-[2] items-center justify-center bg-gray-50 rounded-lg border-2 border-dashed border-gray-300">
+          <div className="text-center">
+            <svg className="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <h3 className="mt-2 text-sm font-medium text-gray-900">Feed not found</h3>
+            <p className="mt-1 text-sm text-gray-500">Pick a feed from the list to continue.</p>
           </div>
         </div>
       )}

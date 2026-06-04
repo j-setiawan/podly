@@ -113,6 +113,21 @@ class TestConfigurationErrorHandling:
         )
         assert config.llm_enable_token_rate_limiting is False
 
+        config = Config(
+            llm_api_key="test-key",
+            enable_llm_chapter_fallback_tagging=True,
+            output=OutputConfig(
+                fade_ms=3000,
+                min_ad_segement_separation_seconds=60,
+                min_ad_segment_length_seconds=14,
+                min_confidence=0.8,
+            ),
+            processing=ProcessingConfig(
+                num_segments_to_input_to_prompt=30,
+            ),
+        )
+        assert config.enable_llm_chapter_fallback_tagging is True
+
 
 class TestEnvKeyValidation:
     """Tests for environment-based API key validation."""
@@ -120,10 +135,19 @@ class TestEnvKeyValidation:
     def test_llm_and_groq_conflict_raises(self, monkeypatch: Any) -> None:
         monkeypatch.setenv("LLM_API_KEY", "llm-value")
         monkeypatch.setenv("GROQ_API_KEY", "groq-value")
+        monkeypatch.setenv("LLM_MODEL", "groq/openai/gpt-oss-120b")
         monkeypatch.delenv("WHISPER_REMOTE_API_KEY", raising=False)
 
         with pytest.raises(SystemExit):
             app_module._validate_env_key_conflicts()
+
+    def test_non_groq_llm_allows_different_groq_key(self, monkeypatch: Any) -> None:
+        monkeypatch.setenv("LLM_API_KEY", "llm-value")
+        monkeypatch.setenv("GROQ_API_KEY", "groq-value")
+        monkeypatch.setenv("LLM_MODEL", "google/gemini-1.5-pro")
+        monkeypatch.delenv("WHISPER_REMOTE_API_KEY", raising=False)
+
+        app_module._validate_env_key_conflicts()
 
     def test_whisper_remote_allows_different_key(self, monkeypatch: Any) -> None:
         monkeypatch.setenv("LLM_API_KEY", "llm-value")
