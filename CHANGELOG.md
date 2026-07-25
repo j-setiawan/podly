@@ -1,3 +1,10 @@
+# [2.6.0](https://github.com/podly-pure-podcasts/podly_pure_podcasts/compare/v2.5.0...v2.6.0) (2026-07-25)
+
+
+### Features
+
+* add per-feed Whisper language override ([bf6e58c](https://github.com/podly-pure-podcasts/podly_pure_podcasts/commit/bf6e58c40f2777781ddd193cf8d248d2e8731220))
+
 # [2.4.0](https://github.com/podly-pure-podcasts/podly_pure_podcasts/compare/v2.3.0...v2.4.0) (2026-06-04)
 
 
