@@ -122,7 +122,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         --reinstall-package torch && \
     uv pip check && \
     REQUIRE_CUDA_ARCH="${REQUIRE_CUDA_ARCH}" \
-        python scripts/cuda_smoke_test.py --build-only; \
+        .venv/bin/python scripts/cuda_smoke_test.py --build-only; \
     elif [ "${USE_GPU_AMD}" = "true" ]; then \
     uv pip install torch --index-url https://download.pytorch.org/whl/rocm${ROCM_VERSION}; \
     else \
