@@ -28,6 +28,9 @@ ENV UV_COMPILE_BYTECODE=1
 ENV UV_LINK_MODE=copy
 ARG CUDA_VERSION=12.4.1
 ARG ROCM_VERSION=6.4
+ARG PYTORCH_VERSION=2.5.1
+ARG PYTORCH_CUDA_TAG=cu124
+ARG REQUIRE_CUDA_ARCH=""
 ARG USE_GPU=false
 ARG USE_GPU_NVIDIA=${USE_GPU}
 ARG USE_GPU_AMD=false
@@ -84,13 +87,16 @@ RUN if [ -f /etc/debian_version ]; then \
 
 # Copy dependency manifests and lock files
 COPY pyproject.toml pyproject.lite.toml uv.lock uv.lite.lock ./
+COPY scripts/cuda_smoke_test.py ./scripts/cuda_smoke_test.py
 
 # Remove problematic distutils-installed packages that may conflict
 RUN if [ -f /etc/debian_version ]; then \
     apt-get remove -y python3-blinker 2>/dev/null || true; \
     fi
 
-# Install dependencies conditionally based on LITE_BUILD
+# Install dependencies conditionally based on LITE_BUILD. The general lock contains
+# a newer CUDA-enabled Torch stack. NVIDIA builds skip that heavyweight stack here
+# and install the Pascal-compatible stack in the following layer instead.
 RUN --mount=type=cache,target=/root/.cache/uv \
     set -e && \
     if [ "${LITE_BUILD}" = "true" ]; then \
@@ -102,15 +108,45 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     else \
     echo "Installing full dependencies (including Whisper)"; \
     echo "Using full pyproject:" && \
+    if [ "${USE_GPU}" = "true" ] || [ "${USE_GPU_NVIDIA}" = "true" ]; then \
+    uv sync --frozen --no-dev --no-install-project \
+        --no-install-package torch \
+        --no-install-package triton \
+        --no-install-package cuda-bindings \
+        --no-install-package nvidia-cublas-cu12 \
+        --no-install-package nvidia-cuda-cupti-cu12 \
+        --no-install-package nvidia-cuda-nvrtc-cu12 \
+        --no-install-package nvidia-cuda-runtime-cu12 \
+        --no-install-package nvidia-cudnn-cu12 \
+        --no-install-package nvidia-cufft-cu12 \
+        --no-install-package nvidia-cufile-cu12 \
+        --no-install-package nvidia-curand-cu12 \
+        --no-install-package nvidia-cusolver-cu12 \
+        --no-install-package nvidia-cusparse-cu12 \
+        --no-install-package nvidia-cusparselt-cu12 \
+        --no-install-package nvidia-nccl-cu12 \
+        --no-install-package nvidia-nvjitlink-cu12 \
+        --no-install-package nvidia-nvshmem-cu12 \
+        --no-install-package nvidia-nvtx-cu12; \
+    else \
     uv sync --frozen --no-dev --no-install-project; \
+    fi; \
     fi
 
 # Install PyTorch with CUDA support if using NVIDIA image (skip if LITE_BUILD)
 RUN --mount=type=cache,target=/root/.cache/uv \
+    set -e && \
     if [ "${LITE_BUILD}" = "true" ]; then \
     echo "Skipping PyTorch installation in lite mode"; \
     elif [ "${USE_GPU}" = "true" ] || [ "${USE_GPU_NVIDIA}" = "true" ]; then \
-    uv pip install nvidia-cudnn-cu12 torch; \
+    PYTORCH_INDEX_URL="https://download.pytorch.org/whl/${PYTORCH_CUDA_TAG}" && \
+    echo "Installing torch==${PYTORCH_VERSION} from ${PYTORCH_INDEX_URL}" && \
+    uv pip install "torch==${PYTORCH_VERSION}" \
+        --index-url "${PYTORCH_INDEX_URL}" \
+        --reinstall-package torch && \
+    uv pip check && \
+    REQUIRE_CUDA_ARCH="${REQUIRE_CUDA_ARCH}" \
+        .venv/bin/python scripts/cuda_smoke_test.py --build-only; \
     elif [ "${USE_GPU_AMD}" = "true" ]; then \
     uv pip install torch --index-url https://download.pytorch.org/whl/rocm${ROCM_VERSION}; \
     else \

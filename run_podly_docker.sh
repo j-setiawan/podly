@@ -212,7 +212,12 @@ if [ "$PRODUCTION_MODE" = true ]; then
     if [ "$LITE_BUILD" = true ]; then
         BRANCH="${BRANCH_SUFFIX}-lite"
     elif [ "$USE_GPU_NVIDIA" = true ]; then
-        BRANCH="${BRANCH_SUFFIX}-gpu-nvidia"
+        PODLY_IMAGE="${PODLY_NVIDIA_IMAGE:-ghcr.io/j-setiawan/podly}"
+        if [ "$BRANCH_SUFFIX" = "main" ]; then
+            BRANCH="latest"
+        else
+            BRANCH="${BRANCH_SUFFIX}"
+        fi
     elif [ "$USE_GPU_AMD" = true ]; then
         BRANCH="${BRANCH_SUFFIX}-gpu-amd"
     else
@@ -220,6 +225,7 @@ if [ "$PRODUCTION_MODE" = true ]; then
     fi
 
     export BRANCH
+    export PODLY_IMAGE
 
     echo -e "${YELLOW}Production mode - using published images${NC}"
     echo -e "${YELLOW}  Branch tag: ${BRANCH}${NC}"
