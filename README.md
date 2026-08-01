@@ -57,3 +57,6 @@ You have a few options to get started:
 ## Contributing
 
 See [contributing guide](docs/contributors.md) for local setup & contribution instructions.
+
+Tesla P4 users can find the pinned NVIDIA image details and a real CUDA smoke
+test in the [NVIDIA Pascal guide](docs/nvidia-pascal.md).

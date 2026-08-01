@@ -220,10 +220,13 @@ A: There are two ways to enable GPU acceleration:
    - You can force GPU mode with `./run_podly_docker.sh --gpu` or force CPU mode with `./run_podly_docker.sh --cpu`
 
 2. **In a local environment**:
-   - Install the CUDA version of PyTorch to your virtual environment:
+   - For a Tesla P4, install the pinned CUDA version of PyTorch in the uv
+     environment. Podly/Whisper does not require torchvision or torchaudio:
    ```bash
-   pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+   uv pip install "torch==2.5.1" --index-url https://download.pytorch.org/whl/cu124
    ```
+   - Run `python scripts/cuda_smoke_test.py` on the GPU host to verify a real
+     CUDA operation, not only CUDA device discovery.
 
 ## Contributing
 
