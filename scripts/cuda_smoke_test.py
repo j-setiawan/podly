@@ -55,9 +55,27 @@ def validate_compiled_arch(required_arch: str, compiled_arches: Sequence[str]) -
         )
 
 
+def get_compiled_arches(torch_module: Any) -> list[str]:
+    """Return compiled CUDA targets, including on hosts without a CUDA device.
+
+    ``torch.cuda.get_arch_list()`` returns an empty list when CUDA is unavailable,
+    which is always the case in an ordinary Docker build. The underlying build
+    metadata does not require a device and is therefore safe to use as a fallback.
+    """
+    compiled_arches = list(torch_module.cuda.get_arch_list())
+    if compiled_arches:
+        return compiled_arches
+
+    torch_c = getattr(torch_module, "_C", None)
+    get_arch_flags = getattr(torch_c, "_cuda_getArchFlags", None)
+    if get_arch_flags is None:
+        return []
+    return get_arch_flags().split()
+
+
 def print_torch_build(torch_module: Any) -> list[str]:
     """Print the CUDA build facts requested for image verification."""
-    compiled_arches = list(torch_module.cuda.get_arch_list())
+    compiled_arches = get_compiled_arches(torch_module)
     print(f"torch.__version__: {torch_module.__version__}")
     print(f"torch.version.cuda: {torch_module.version.cuda}")
     print(f"torch.cuda.get_arch_list(): {compiled_arches}")
